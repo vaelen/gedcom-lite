@@ -1,0 +1,18 @@
+0 HEAD
+1 SOUR gedcom-skills
+1 GEDC
+2 VERS 5.5.1
+2 FORM LINEAGE-LINKED
+1 CHAR ANSEL
+1 SUBM @U1@
+0 @U1@ SUBM
+1 NAME Test
+0 @I1@ INDI
+1 NAME Hans /MËuller/
+2 GIVN Hans
+2 SURN MËuller
+0 @I2@ INDI
+1 NAME ‚Elise /B‚eland/
+2 GIVN ‚Elise
+2 SURN B‚eland
+0 TRLR

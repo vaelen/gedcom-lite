@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gedcom-lite"
+version = "0.1.0"
+description = "A lightweight, fidelity-preserving GEDCOM parser, writer, and CLI for genealogy files (5.5.1, 5.5.5, and FamilySearch GEDCOM 7)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Andrew C. Young", email = "andrew@vaelen.org" },
+]
+keywords = ["gedcom", "genealogy", "family-tree", "ansel", "familysearch", "lineage-linked"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Sociology :: Genealogy",
+  "Topic :: Text Processing :: Markup",
+  "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+
+[project.scripts]
+gedcom-read = "gedcom_lite.cli.read:main"
+gedcom-search = "gedcom_lite.cli.search:main"
+gedcom-update = "gedcom_lite.cli.update:main"
+
+[project.urls]
+Homepage = "https://github.com/vaelen/gedcom-lite"
+Repository = "https://github.com/vaelen/gedcom-lite"
+Issues = "https://github.com/vaelen/gedcom-lite/issues"
+Changelog = "https://github.com/vaelen/gedcom-lite/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gedcom_lite"]
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
