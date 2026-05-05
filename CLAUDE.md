@@ -116,6 +116,20 @@ Semantic versioning. The current version lives in three places — keep them in 
 
 Releases are tagged `v0.1.0`, `v0.2.0`, … (with the leading `v`).
 
+## Releasing
+
+PyPI publishing runs from `.github/workflows/release.yml` via OIDC trusted publishing — no API tokens. Steps:
+
+1. Bump the version in all three places above and update `CHANGELOG.md`.
+2. Land the bump on `main` (PR or direct push).
+3. (Optional, recommended for a first try) Rehearse on TestPyPI: `gh workflow run release.yml`. Verify with `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ gedcom-lite==X.Y.Z` in a throwaway venv.
+4. Cut the real release: `gh release create vX.Y.Z --generate-notes`. The workflow builds and uploads to PyPI.
+5. Verify with `pip install gedcom-lite==X.Y.Z` in a fresh venv.
+
+CI (`.github/workflows/ci.yml`) runs `pytest` on push and PR across Python 3.11/3.12/3.13. Don't merge a release bump on red CI.
+
+The PyPI / TestPyPI trusted-publisher entries and the `pypi` / `testpypi` GitHub Environments are one-time setup, documented at the top of `release.yml`.
+
 ## House style
 
 - Short, declarative, prescriptive where it matters. Match the tone of this file.
