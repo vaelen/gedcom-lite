@@ -15,7 +15,7 @@ The "lite" in the name is a deliberate scope choice: pure Python, no runtime dep
 ## Install
 
 ```bash
-# from PyPI (once published)
+# from PyPI
 pip install gedcom-lite
 
 # from git
@@ -125,6 +125,16 @@ The suite covers:
 - Mutation primitives, including the "only-touched-lines-change" property
 - Ancestry/descendancy traversal
 - CLI smoke tests for `gedcom-read`, `gedcom-search`, `gedcom-update`
+
+## Releasing
+
+Maintainer notes — releases publish to PyPI from `.github/workflows/release.yml` via OIDC trusted publishing (no stored tokens).
+
+1. Bump the version in `pyproject.toml`, `src/gedcom_lite/__init__.py`, and `CHANGELOG.md`. Push the changes to the `main` branch.
+2. (Optional) Rehearse to TestPyPI: `gh workflow run release.yml`.
+3. Cut the release: `gh release create vX.Y.Z --generate-notes`. The workflow builds and uploads to PyPI on the `release: published` event.
+
+The PyPI / TestPyPI trusted-publisher entries and the matching `pypi` / `testpypi` GitHub Environments are one-time setup, documented at the top of `release.yml`. CI runs `pytest` on push and PR across Python 3.11/3.12/3.13.
 
 ## Versions in scope
 

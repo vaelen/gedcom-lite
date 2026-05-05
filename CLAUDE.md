@@ -121,7 +121,7 @@ Releases are tagged `v0.1.0`, `v0.2.0`, … (with the leading `v`).
 PyPI publishing runs from `.github/workflows/release.yml` via OIDC trusted publishing — no API tokens. Steps:
 
 1. Bump the version in all three places above and update `CHANGELOG.md`.
-2. Land the bump on `main` (PR or direct push).
+2. Push the changes to the `main` branch (PR or direct push).
 3. (Optional, recommended for a first try) Rehearse on TestPyPI: `gh workflow run release.yml`. Verify with `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ gedcom-lite==X.Y.Z` in a throwaway venv.
 4. Cut the real release: `gh release create vX.Y.Z --generate-notes`. The workflow builds and uploads to PyPI.
 5. Verify with `pip install gedcom-lite==X.Y.Z` in a fresh venv.
