@@ -91,6 +91,19 @@ gedcom-search tree.ged --born-between 1900 1910
 gedcom-search tree.ged --children-of @I1@
 gedcom-search tree.ged --ancestors-of @I1@ --depth 4
 
+# ancestor records carry their generation in JSON (subject = 0, parents = 1, …)
+gedcom-search tree.ged --ancestors-of @I1@ --json | jq '.[].generation'
+
+# canonical per-INDI facts (xref, name, birth, death, parents, famc)
+gedcom-search tree.ged --xref @I1@ --facts
+gedcom-search tree.ged --ancestors-of @I1@ --facts | jq '.[] | {xref, name, generation}'
+
+# Sosa-Stradonitz numbered ancestors (subject = 1, father of N = 2N, mother = 2N+1)
+gedcom-search tree.ged --ahnentafel @I1@ --primary-famc-only
+
+# list individuals with conflicting (multiple) FAMC links
+gedcom-search tree.ged --famc-conflicts --facts
+
 # edit a name (default writes to stdout)
 gedcom-update tree.ged set-payload @I1@ NAME "Jane /Doe/" > new.ged
 
