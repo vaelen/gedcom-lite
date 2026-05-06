@@ -12,7 +12,7 @@ Top-level public API:
 
     parents_of, children_of, ancestors_of, descendants_of
     ancestors_of_with_generation, descendants_of_with_generation
-    ahnentafel
+    ahnentafel, cousins_of_with_degree, siblings_of
 
     decode_ansel, encode_ansel
 
@@ -34,9 +34,11 @@ from .traversal import (
     ancestors_of,
     ancestors_of_with_generation,
     children_of,
+    cousins_of_with_degree,
     descendants_of,
     descendants_of_with_generation,
     parents_of,
+    siblings_of,
 )
 
 __version__ = "0.2.0"
@@ -52,9 +54,11 @@ __all__ = [
     "ancestors_of",
     "ancestors_of_with_generation",
     "children_of",
+    "cousins_of_with_degree",
     "descendants_of",
     "descendants_of_with_generation",
     "parents_of",
+    "siblings_of",
     "decode_ansel",
     "encode_ansel",
     "document_to_dict",

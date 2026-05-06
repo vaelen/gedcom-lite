@@ -10,9 +10,11 @@ from gedcom_lite import (
     ancestors_of,
     ancestors_of_with_generation,
     children_of,
+    cousins_of_with_degree,
     descendants_of,
     descendants_of_with_generation,
     parents_of,
+    siblings_of,
 )
 
 
@@ -111,6 +113,88 @@ def _descent_filter_doc() -> GedcomDocument:
         b"0 @I5@ INDI\n1 NAME DisputedChild //\n1 FAMC @F2@\n1 FAMC @F1@\n"
         b"0 @F1@ FAM\n1 HUSB @I1@\n1 WIFE @I2@\n1 CHIL @I5@\n"
         b"0 @F2@ FAM\n1 HUSB @I3@\n1 WIFE @I4@\n1 CHIL @I5@\n"
+        b"0 TRLR\n"
+    )
+    return GedcomDocument.parse(src)
+
+
+def _sibling_doc() -> GedcomDocument:
+    """Subject with one full and one half sibling.
+
+        @F1@: @I2@ (HUSB) + @I3@ (WIFE) → @I1@ (subject), @I6@ (full sibling)
+        @F2@: @I2@ (HUSB) + @I8@ (WIFE) → @I7@ (half sibling via shared @I2@)
+    """
+    src = (
+        b"0 HEAD\n1 GEDC\n2 VERS 7.0\n"
+        b"0 @I1@ INDI\n1 NAME Subject //\n1 FAMC @F1@\n"
+        b"0 @I2@ INDI\n1 NAME SharedParent //\n1 SEX M\n1 FAMS @F1@\n1 FAMS @F2@\n"
+        b"0 @I3@ INDI\n1 NAME OtherParent //\n1 SEX F\n1 FAMS @F1@\n"
+        b"0 @I6@ INDI\n1 NAME FullSibling //\n1 FAMC @F1@\n"
+        b"0 @I7@ INDI\n1 NAME HalfSibling //\n1 FAMC @F2@\n"
+        b"0 @I8@ INDI\n1 NAME StepParent //\n1 SEX F\n1 FAMS @F2@\n"
+        b"0 @F1@ FAM\n1 HUSB @I2@\n1 WIFE @I3@\n1 CHIL @I1@\n1 CHIL @I6@\n"
+        b"0 @F2@ FAM\n1 HUSB @I2@\n1 WIFE @I8@\n1 CHIL @I7@\n"
+        b"0 TRLR\n"
+    )
+    return GedcomDocument.parse(src)
+
+
+def _sibling_multi_famc_doc() -> GedcomDocument:
+    """Subject with two FAMCs, each with a different sibling.
+
+        @F1@ (primary): @I2@ + @I3@ → @I1@, @I6@
+        @F2@ (secondary): @I4@ + @I5@ → @I1@, @I7@
+
+    With ``primary_famc_only=True``, only @I6@ should appear; without it,
+    both @I6@ and @I7@.
+    """
+    src = (
+        b"0 HEAD\n1 GEDC\n2 VERS 7.0\n"
+        b"0 @I1@ INDI\n1 NAME Subject //\n1 FAMC @F1@\n1 FAMC @F2@\n"
+        b"0 @I2@ INDI\n1 NAME PrimaryFather //\n1 SEX M\n1 FAMS @F1@\n"
+        b"0 @I3@ INDI\n1 NAME PrimaryMother //\n1 SEX F\n1 FAMS @F1@\n"
+        b"0 @I4@ INDI\n1 NAME SecondaryFather //\n1 SEX M\n1 FAMS @F2@\n"
+        b"0 @I5@ INDI\n1 NAME SecondaryMother //\n1 SEX F\n1 FAMS @F2@\n"
+        b"0 @I6@ INDI\n1 NAME PrimarySibling //\n1 FAMC @F1@\n"
+        b"0 @I7@ INDI\n1 NAME SecondarySibling //\n1 FAMC @F2@\n"
+        b"0 @F1@ FAM\n1 HUSB @I2@\n1 WIFE @I3@\n1 CHIL @I1@\n1 CHIL @I6@\n"
+        b"0 @F2@ FAM\n1 HUSB @I4@\n1 WIFE @I5@\n1 CHIL @I1@\n1 CHIL @I7@\n"
+        b"0 TRLR\n"
+    )
+    return GedcomDocument.parse(src)
+
+
+def _cousin_doc() -> GedcomDocument:
+    """Two-branch tree exercising first and second cousins.
+
+        @I10@ (great-grandparent)
+          ├── @I4@ (grandparent of @I1@)
+          │     ├── @I2@ (parent of @I1@)
+          │     │     └── @I1@ (subject)
+          │     └── @I7@ (aunt/uncle)
+          │           └── @I8@ (first cousin)
+          └── @I12@ (great-aunt/uncle)
+                └── @I13@ (parent's first cousin)
+                      └── @I14@ (second cousin)
+    """
+    src = (
+        b"0 HEAD\n1 GEDC\n2 VERS 7.0\n"
+        b"0 @I1@ INDI\n1 NAME Subject //\n1 FAMC @F1@\n"
+        b"0 @I2@ INDI\n1 NAME Parent //\n1 FAMS @F1@\n1 FAMC @F2@\n"
+        b"0 @I4@ INDI\n1 NAME Grandparent //\n1 FAMS @F2@\n1 FAMC @F3@\n"
+        b"0 @I7@ INDI\n1 NAME AuntUncle //\n1 FAMC @F2@\n1 FAMS @F4@\n"
+        b"0 @I8@ INDI\n1 NAME FirstCousin //\n1 FAMC @F4@\n"
+        b"0 @I10@ INDI\n1 NAME GreatGrandparent //\n1 FAMS @F3@\n1 FAMS @F5@\n"
+        b"0 @I12@ INDI\n1 NAME GreatAuntUncle //\n1 FAMC @F5@\n1 FAMS @F6@\n"
+        b"0 @I13@ INDI\n1 NAME FirstCousinOnceRemoved //\n1 FAMC @F6@\n1 FAMS @F7@\n"
+        b"0 @I14@ INDI\n1 NAME SecondCousin //\n1 FAMC @F7@\n"
+        b"0 @F1@ FAM\n1 HUSB @I2@\n1 CHIL @I1@\n"
+        b"0 @F2@ FAM\n1 HUSB @I4@\n1 CHIL @I2@\n1 CHIL @I7@\n"
+        b"0 @F3@ FAM\n1 HUSB @I10@\n1 CHIL @I4@\n"
+        b"0 @F4@ FAM\n1 HUSB @I7@\n1 CHIL @I8@\n"
+        b"0 @F5@ FAM\n1 HUSB @I10@\n1 CHIL @I12@\n"
+        b"0 @F6@ FAM\n1 HUSB @I12@\n1 CHIL @I13@\n"
+        b"0 @F7@ FAM\n1 HUSB @I13@\n1 CHIL @I14@\n"
         b"0 TRLR\n"
     )
     return GedcomDocument.parse(src)
@@ -305,3 +389,101 @@ class TestAhnentafel:
         result = ahnentafel(doc, c)
         sosas = [n for _, _, n in result]
         assert sosas == sorted(sosas)
+
+
+class TestSiblings:
+    def test_full_and_half_siblings(self) -> None:
+        doc = _sibling_doc()
+        subject = doc.resolve("@I1@")
+        sibs = sorted(s.xref for s in siblings_of(doc, subject))
+        assert sibs == ["@I6@", "@I7@"]
+
+    def test_excludes_subject(self) -> None:
+        doc = _sibling_doc()
+        subject = doc.resolve("@I1@")
+        sibs = siblings_of(doc, subject)
+        assert all(s.xref != "@I1@" for s in sibs)
+
+    def test_no_parents_returns_empty(self) -> None:
+        doc = _three_generation_doc()
+        root = doc.resolve("@I1@")
+        assert siblings_of(doc, root) == []
+
+    def test_primary_famc_only_collapses_to_primary_branch(self) -> None:
+        doc = _sibling_multi_famc_doc()
+        subject = doc.resolve("@I1@")
+        all_sibs = sorted(s.xref for s in siblings_of(doc, subject))
+        assert all_sibs == ["@I6@", "@I7@"]
+        primary_sibs = sorted(
+            s.xref for s in siblings_of(doc, subject, primary_famc_only=True)
+        )
+        assert primary_sibs == ["@I6@"]
+
+
+class TestCousins:
+    def test_first_cousin_at_depth_1(self) -> None:
+        doc = _cousin_doc()
+        subject = doc.resolve("@I1@")
+        result = cousins_of_with_degree(doc, subject, depth=1)
+        by_xref = {s.xref: (deg, rem) for s, deg, rem in result}
+        assert by_xref == {"@I7@": (1, 1), "@I8@": (1, 0)}
+
+    def test_excludes_subject_line(self) -> None:
+        doc = _cousin_doc()
+        subject = doc.resolve("@I1@")
+        result = cousins_of_with_degree(doc, subject)
+        xrefs = {s.xref for s, _, _ in result}
+        assert xrefs.isdisjoint({"@I1@", "@I2@", "@I4@", "@I10@"})
+
+    def test_depth_caps_cumulatively(self) -> None:
+        doc = _cousin_doc()
+        subject = doc.resolve("@I1@")
+        d1 = {s.xref for s, _, _ in cousins_of_with_degree(doc, subject, depth=1)}
+        d2 = {s.xref for s, _, _ in cousins_of_with_degree(doc, subject, depth=2)}
+        assert d1 == {"@I7@", "@I8@"}
+        assert d2 == {"@I7@", "@I8@", "@I12@", "@I13@", "@I14@"}
+
+    def test_second_cousin_degree_and_removed(self) -> None:
+        doc = _cousin_doc()
+        subject = doc.resolve("@I1@")
+        result = cousins_of_with_degree(doc, subject, depth=2)
+        by_xref = {s.xref: (deg, rem) for s, deg, rem in result}
+        # @I12@: descend_dist=0, gen_n=2 → degree=2, removed=2 (great-aunt/uncle)
+        # @I13@: descend_dist=1, gen_n=2 → degree=2, removed=1 (1c1r-like)
+        # @I14@: descend_dist=2, gen_n=2 → degree=2, removed=0 (true second cousin)
+        assert by_xref["@I12@"] == (2, 2)
+        assert by_xref["@I13@"] == (2, 1)
+        assert by_xref["@I14@"] == (2, 0)
+
+    def test_sorted_by_degree_then_removed(self) -> None:
+        doc = _cousin_doc()
+        subject = doc.resolve("@I1@")
+        result = cousins_of_with_degree(doc, subject, depth=2)
+        keys = [(deg, rem) for _, deg, rem in result]
+        assert keys == sorted(keys)
+
+    def test_dedup_via_cousin_marriage(self) -> None:
+        # In _cousin_marriage_doc, @I9@ is reachable as both grandparent (gen 2)
+        # via the maternal side and great-grandparent (gen 3) via the paternal
+        # side. @I7@ (great-grandmother on paternal side) is a non-line
+        # individual; she is NOT a cousin (she's an ancestor's spouse, no
+        # sibling relation here), so this fixture mainly tests that subject's
+        # ancestors are excluded — see test_excludes_subject_line. Use it here
+        # to confirm no result entry duplicates an xref.
+        doc = _cousin_marriage_doc()
+        subject = doc.resolve("@I1@")
+        result = cousins_of_with_degree(doc, subject)
+        xrefs = [s.xref for s, _, _ in result]
+        assert len(xrefs) == len(set(xrefs))
+
+    def test_primary_famc_only(self) -> None:
+        doc = _cousin_doc()
+        subject = doc.resolve("@I1@")
+        # Subject has only one FAMC; primary_famc_only is a no-op for the
+        # ancestor walk. The kwarg should still plumb through cleanly.
+        plain = {s.xref for s, _, _ in cousins_of_with_degree(doc, subject)}
+        primary = {
+            s.xref for s, _, _
+            in cousins_of_with_degree(doc, subject, primary_famc_only=True)
+        }
+        assert plain == primary

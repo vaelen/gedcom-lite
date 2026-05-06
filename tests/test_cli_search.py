@@ -569,3 +569,232 @@ class TestTraversalComposition:
         assert rc == 0
         lines = [ln for ln in stdout.splitlines() if ln.strip()]
         assert len(lines) == 1
+
+
+@pytest.fixture
+def cousin_tree(tmp_path: Path) -> Path:
+    """Two-branch tree exercising first and second cousins.
+
+    Subject @I1@. First cousin @I8@ via aunt/uncle @I7@ (sibling of parent
+    @I2@). Second cousin @I14@ via great-aunt/uncle @I12@ (sibling of
+    grandparent @I4@). All males to keep HUSB/WIFE simple.
+    """
+    src = (
+        "0 HEAD\n1 GEDC\n2 VERS 7.0\n"
+        "0 @I1@ INDI\n1 NAME Subject //\n1 FAMC @F1@\n"
+        "0 @I2@ INDI\n1 NAME Parent //\n1 FAMS @F1@\n1 FAMC @F2@\n"
+        "0 @I4@ INDI\n1 NAME Grandparent //\n1 FAMS @F2@\n1 FAMC @F3@\n"
+        "0 @I7@ INDI\n1 NAME AuntUncle //\n1 FAMC @F2@\n1 FAMS @F4@\n"
+        "0 @I8@ INDI\n1 NAME FirstCousin //\n1 FAMC @F4@\n"
+        "0 @I10@ INDI\n1 NAME GreatGrandparent //\n1 FAMS @F3@\n1 FAMS @F5@\n"
+        "0 @I12@ INDI\n1 NAME GreatAuntUncle //\n1 FAMC @F5@\n1 FAMS @F6@\n"
+        "0 @I13@ INDI\n1 NAME FirstCousinOnceRemoved //\n1 FAMC @F6@\n1 FAMS @F7@\n"
+        "0 @I14@ INDI\n1 NAME SecondCousin //\n1 FAMC @F7@\n"
+        "0 @F1@ FAM\n1 HUSB @I2@\n1 CHIL @I1@\n"
+        "0 @F2@ FAM\n1 HUSB @I4@\n1 CHIL @I2@\n1 CHIL @I7@\n"
+        "0 @F3@ FAM\n1 HUSB @I10@\n1 CHIL @I4@\n"
+        "0 @F4@ FAM\n1 HUSB @I7@\n1 CHIL @I8@\n"
+        "0 @F5@ FAM\n1 HUSB @I10@\n1 CHIL @I12@\n"
+        "0 @F6@ FAM\n1 HUSB @I12@\n1 CHIL @I13@\n"
+        "0 @F7@ FAM\n1 HUSB @I13@\n1 CHIL @I14@\n"
+        "0 TRLR\n"
+    )
+    p = tmp_path / "cousins.ged"
+    p.write_text(src, encoding="utf-8")
+    return p
+
+
+class TestBulkXref:
+    def test_multiple_xrefs_facts_in_order(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(family_tree), "--xref", "@I1@", "@I2@", "@I3@", "--facts"],
+            capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        assert [d["xref"] for d in data] == ["@I1@", "@I2@", "@I3@"]
+
+    def test_missing_xref_warns_continues(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, stderr = _run(
+            [str(family_tree), "--xref", "@I1@", "@IBOGUS@", "--facts"],
+            capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        assert [d["xref"] for d in data] == ["@I1@"]
+        assert "warning: no record with xref @IBOGUS@" in stderr
+
+    def test_all_missing_exits_1(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, stderr = _run(
+            [str(family_tree), "--xref", "@IBOGUS@", "@INOPE@", "--facts"],
+            capsys,
+        )
+        assert rc == 1
+        data = json.loads(stdout)
+        assert data == []
+        assert "@IBOGUS@" in stderr
+        assert "@INOPE@" in stderr
+
+    def test_single_xref_unchanged_behavior(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run([str(family_tree), "--xref", "@I1@"], capsys)
+        assert rc == 0
+        assert "@I1@" in stdout
+
+    def test_preserves_argument_order(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(family_tree), "--xref", "@I3@", "@I1@", "@I2@", "--facts"],
+            capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        assert [d["xref"] for d in data] == ["@I3@", "@I1@", "@I2@"]
+
+
+class TestSiblingsOf:
+    def test_siblings_text(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run([str(family_tree), "--siblings-of", "@I1@"], capsys)
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert xrefs == ["@I6@"]
+
+    def test_siblings_facts_no_extra_fields(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(family_tree), "--siblings-of", "@I1@", "--facts"], capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        assert len(data) == 1 and data[0]["xref"] == "@I6@"
+        for k in ("generation", "sosa", "degree", "removed"):
+            assert k not in data[0]
+
+    def test_siblings_unknown_xref_exit_1(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, _, stderr = _run(
+            [str(family_tree), "--siblings-of", "@MISSING@"], capsys,
+        )
+        assert rc == 1
+        assert "no INDI" in stderr
+
+    def test_siblings_mutex_with_other_rel_modes(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, _, stderr = _run(
+            [str(family_tree), "--siblings-of", "@I1@", "--ancestors-of", "@I1@"],
+            capsys,
+        )
+        assert rc == 2
+        assert "exactly one" in stderr
+
+    def test_siblings_with_person_filter(
+        self, family_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(family_tree), "--siblings-of", "@I1@", "--person", "Disputed"],
+            capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert xrefs == ["@I6@"]
+
+
+class TestCousinsOf:
+    def test_facts_includes_degree_and_removed(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@", "--depth", "1", "--facts"],
+            capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        by_xref = {d["xref"]: (d["degree"], d["removed"]) for d in data}
+        assert by_xref == {"@I7@": (1, 1), "@I8@": (1, 0)}
+
+    def test_text_mode_suffix(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@", "--depth", "1"], capsys,
+        )
+        assert rc == 0
+        assert "(degree 1, removed 0)" in stdout
+        assert "(degree 1, removed 1)" in stdout
+
+    def test_json_includes_degree_and_removed(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@", "--depth", "1", "--json"],
+            capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        assert all("degree" in d and "removed" in d for d in data)
+
+    def test_depth_caps_cumulatively(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc1, out1, _ = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@", "--depth", "1", "--facts"],
+            capsys,
+        )
+        rc2, out2, _ = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@", "--depth", "2", "--facts"],
+            capsys,
+        )
+        assert rc1 == 0 and rc2 == 0
+        d1 = {d["xref"] for d in json.loads(out1)}
+        d2 = {d["xref"] for d in json.loads(out2)}
+        assert d1 == {"@I7@", "@I8@"}
+        assert d2 == {"@I7@", "@I8@", "@I12@", "@I13@", "@I14@"}
+
+    def test_unknown_xref_exit_1(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, _, stderr = _run(
+            [str(cousin_tree), "--cousins-of", "@MISSING@"], capsys,
+        )
+        assert rc == 1
+        assert "no INDI" in stderr
+
+    def test_mutex_with_other_rel_modes(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, _, stderr = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@", "--children-of", "@I2@"],
+            capsys,
+        )
+        assert rc == 2
+        assert "exactly one" in stderr
+
+    def test_composes_with_person_filter(
+        self, cousin_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(cousin_tree), "--cousins-of", "@I1@",
+             "--person", "FirstCousin", "--facts"],
+            capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        # Only @I8@ (NAME "FirstCousin //") matches; "FirstCousinOnceRemoved"
+        # also contains the substring, so include it. Both should preserve
+        # degree/removed metadata.
+        xrefs = {d["xref"] for d in data}
+        assert "@I8@" in xrefs
+        assert all("degree" in d for d in data)
