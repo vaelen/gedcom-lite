@@ -11,6 +11,8 @@ Top-level public API:
     DateValue, parse_date_value
 
     parents_of, children_of, ancestors_of, descendants_of
+    ancestors_of_with_generation, descendants_of_with_generation
+    ahnentafel
 
     decode_ansel, encode_ansel
 
@@ -27,9 +29,17 @@ from .core import (
     to_json,
 )
 from .dates import DateValue, parse_date_value
-from .traversal import ancestors_of, children_of, descendants_of, parents_of
+from .traversal import (
+    ahnentafel,
+    ancestors_of,
+    ancestors_of_with_generation,
+    children_of,
+    descendants_of,
+    descendants_of_with_generation,
+    parents_of,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -38,9 +48,12 @@ __all__ = [
     "parse",
     "DateValue",
     "parse_date_value",
+    "ahnentafel",
     "ancestors_of",
+    "ancestors_of_with_generation",
     "children_of",
     "descendants_of",
+    "descendants_of_with_generation",
     "parents_of",
     "decode_ansel",
     "encode_ansel",

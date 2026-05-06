@@ -22,10 +22,16 @@ Three search modes (one chosen per invocation):
     --parents-of @I1@           parents via FAMC → HUSB/WIFE
     --ancestors-of @I1@         all ancestors (with --depth N)
     --descendants-of @I1@       all descendants (with --depth N)
+    --ahnentafel @I1@           Sosa-numbered ancestor list
     --depth N                   limit ancestor/descendant traversal
 
-Output modifiers:
+* FAMC handling (composes with relationship modes)
+    --primary-famc-only         follow only the first FAMC of any individual
+    --famc-conflicts            list INDIs with more than one FAMC
+
+Output modifiers (one of --json / --facts / --show-record at most):
     --json                      structured matches as JSON
+    --facts                     per-INDI canonical JSON shape
     --show-record               include the surrounding record dump
     --count                     emit only the number of matches
     --limit N                   cap the number of matches
@@ -41,9 +47,10 @@ import sys
 from gedcom_lite import (
     GedcomDocument,
     Structure,
-    ancestors_of,
+    ahnentafel,
+    ancestors_of_with_generation,
     children_of,
-    descendants_of,
+    descendants_of_with_generation,
     parents_of,
     parse_date_value,
     structure_to_dict,
@@ -189,11 +196,63 @@ def _died_in(doc: GedcomDocument, place: str, regex: bool) -> list[Structure]:
     return out
 
 
+def _famc_conflicts(doc: GedcomDocument) -> list[Structure]:
+    return [i for i in _individuals(doc) if len(i.find_all_children("FAMC")) > 1]
+
+
+# ---------------------------------------------------------------------------
+# Per-INDI fact projection (--facts shape)
+# ---------------------------------------------------------------------------
+
+def _event_pair(event: Structure | None) -> tuple[str | None, str | None]:
+    if event is None:
+        return (None, None)
+    date = event.find("DATE")
+    plac = event.find("PLAC")
+    return (
+        date.payload if date and date.payload else None,
+        plac.payload if plac and plac.payload else None,
+    )
+
+
+def _indi_facts(
+    indi: Structure,
+    doc: GedcomDocument,
+    *,
+    generation: int | None = None,
+    sosa: int | None = None,
+    primary_famc_only: bool = False,
+) -> dict:
+    name = indi.find("NAME")
+    birth_date, birth_place = _event_pair(indi.find("BIRT"))
+    death_date, death_place = _event_pair(indi.find("DEAT"))
+    parent_xrefs = [
+        p.xref for p in parents_of(doc, indi, primary_famc_only=primary_famc_only)
+        if p.xref
+    ]
+    famc_payloads = [
+        c.payload for c in indi.find_all_children("FAMC") if c.payload
+    ]
+    out: dict = {
+        "xref": indi.xref,
+        "name": name.payload if name and name.payload else None,
+        "birth": {"date": birth_date, "place": birth_place},
+        "death": {"date": death_date, "place": death_place},
+        "parents": parent_xrefs,
+        "famc": famc_payloads,
+    }
+    if generation is not None:
+        out["generation"] = generation
+    if sosa is not None:
+        out["sosa"] = sosa
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Output rendering
 # ---------------------------------------------------------------------------
 
-def _person_summary(rec: Structure) -> str:
+def _person_summary(rec: Structure, *, generation: int | None = None, sosa: int | None = None) -> str:
     name = rec.find("NAME")
     name_str = name.payload if name and name.payload else "(no name)"
     bd = rec.find("BIRT")
@@ -201,13 +260,19 @@ def _person_summary(rec: Structure) -> str:
     birth = (bd.find("DATE").payload if bd and bd.find("DATE") else None)
     death = (dd.find("DATE").payload if dd and dd.find("DATE") else None)
     if birth or death:
-        return f"{rec.xref}  {name_str}  ({birth or '?'} – {death or '?'})"
-    return f"{rec.xref}  {name_str}"
+        line = f"{rec.xref}  {name_str}  ({birth or '?'} – {death or '?'})"
+    else:
+        line = f"{rec.xref}  {name_str}"
+    if sosa is not None:
+        line = f"{sosa}  {line}"
+    elif generation is not None:
+        line = f"{line} (gen {generation})"
+    return line
 
 
-def _record_summary_line(rec: Structure) -> str:
+def _record_summary_line(rec: Structure, *, generation: int | None = None, sosa: int | None = None) -> str:
     if rec.tag == "INDI":
-        return _person_summary(rec)
+        return _person_summary(rec, generation=generation, sosa=sosa)
     if rec.tag == "FAM":
         partners = []
         for slot in ("HUSB", "WIFE"):
@@ -219,16 +284,49 @@ def _record_summary_line(rec: Structure) -> str:
     return f"{rec.xref}  ({rec.tag})"
 
 
-def _emit_records(records: list[Structure], args: argparse.Namespace, doc: GedcomDocument) -> None:
+def _emit_records(
+    records: list[Structure],
+    args: argparse.Namespace,
+    doc: GedcomDocument,
+    *,
+    generations: list[int | None] | None = None,
+    sosas: list[int | None] | None = None,
+) -> None:
+    if generations is None:
+        generations = [None] * len(records)
+    if sosas is None:
+        sosas = [None] * len(records)
+
     if args.count:
         sys.stdout.write(f"{len(records)}\n")
         return
-    if args.json:
-        sys.stdout.write(json.dumps([structure_to_dict(r) for r in records], indent=2, ensure_ascii=False))
+    if args.facts:
+        items = []
+        for r, gen, sosa in zip(records, generations, sosas):
+            if r.tag != "INDI":
+                continue
+            items.append(_indi_facts(
+                r, doc,
+                generation=gen, sosa=sosa,
+                primary_famc_only=args.primary_famc_only,
+            ))
+        sys.stdout.write(json.dumps(items, indent=2, ensure_ascii=False))
         sys.stdout.write("\n")
         return
-    for r in records:
-        sys.stdout.write(_record_summary_line(r) + "\n")
+    if args.json:
+        items = []
+        for r, gen, sosa in zip(records, generations, sosas):
+            d = structure_to_dict(r)
+            if gen is not None:
+                d["generation"] = gen
+            if sosa is not None:
+                d["sosa"] = sosa
+            items.append(d)
+        sys.stdout.write(json.dumps(items, indent=2, ensure_ascii=False))
+        sys.stdout.write("\n")
+        return
+    for r, gen, sosa in zip(records, generations, sosas):
+        sys.stdout.write(_record_summary_line(r, generation=gen, sosa=sosa) + "\n")
         if args.show_record:
             sys.stdout.write(_render_record(r) + "\n")
 
@@ -298,10 +396,19 @@ def _build_parser() -> argparse.ArgumentParser:
     rl.add_argument("--parents-of", metavar="XREF", help="parents of an INDI via FAMC → HUSB/WIFE")
     rl.add_argument("--ancestors-of", metavar="XREF", help="all ancestors of an INDI")
     rl.add_argument("--descendants-of", metavar="XREF", help="all descendants of an INDI")
+    rl.add_argument("--ahnentafel", metavar="XREF", help="Sosa-numbered ancestor list rooted at this INDI")
     rl.add_argument("--depth", type=int, default=99, help="cap traversal depth (default: unlimited)")
+
+    fc = p.add_argument_group("FAMC handling")
+    fc.add_argument("--primary-famc-only", action="store_true",
+                    help="follow only the first FAMC of any individual during traversal")
+    fc.add_argument("--famc-conflicts", action="store_true",
+                    help="list INDIs with more than one FAMC entry")
 
     o = p.add_argument_group("output")
     o.add_argument("--json", action="store_true", help="emit JSON")
+    o.add_argument("--facts", action="store_true",
+                   help="emit per-INDI canonical JSON facts (xref, name, birth, death, parents, famc)")
     o.add_argument("--show-record", action="store_true", help="include surrounding record dumps")
     o.add_argument("--count", action="store_true", help="emit only the number of matches")
     o.add_argument("--limit", type=int, help="cap the number of matches emitted")
@@ -312,28 +419,40 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
+    if sum([args.json, args.facts, args.show_record]) > 1:
+        print("error: --json, --facts, and --show-record are mutually exclusive.", file=sys.stderr)
+        return 2
+
     if args.file == "-":
         doc = GedcomDocument.parse(sys.stdin.buffer.read())
     else:
         doc = GedcomDocument.parse(args.file)
 
     person_modes = [args.person is not None, args.born_between is not None, args.died_in is not None]
-    rel_modes = [args.children_of, args.parents_of, args.ancestors_of, args.descendants_of]
+    rel_modes = [
+        args.children_of, args.parents_of, args.ancestors_of,
+        args.descendants_of, args.ahnentafel,
+    ]
     rel_active = any(rel_modes)
     generic_filters = any([args.tag, args.value, args.in_record, args.path, args.xref])
 
-    active_modes = sum([generic_filters, any(person_modes), rel_active])
+    active_modes = sum([generic_filters, any(person_modes), rel_active, args.famc_conflicts])
     if active_modes == 0:
         print("error: no search criteria given. See --help for the available filters.", file=sys.stderr)
         return 2
     if active_modes > 1:
-        print("error: combine filters within a single mode only (generic / person / relationship).", file=sys.stderr)
+        print("error: combine filters within a single mode only (generic / person / relationship / famc-conflicts).", file=sys.stderr)
+        return 2
+    if rel_active and sum(1 for m in rel_modes if m) > 1:
+        print("error: pick exactly one of --children-of / --parents-of / --ancestors-of / --descendants-of / --ahnentafel.", file=sys.stderr)
         return 2
 
     if args.xref:
         rec = doc.resolve(args.xref)
         records = [rec] if rec is not None else []
-        _emit_records(records[: args.limit] if args.limit else records, args, doc)
+        if args.limit:
+            records = records[: args.limit]
+        _emit_records(records, args, doc)
         return 0
 
     if generic_filters:
@@ -360,23 +479,57 @@ def main(argv: list[str] | None = None) -> int:
         _emit_records(results, args, doc)
         return 0
 
+    if args.famc_conflicts:
+        results = _famc_conflicts(doc)
+        if args.limit:
+            results = results[: args.limit]
+        _emit_records(results, args, doc)
+        return 0
+
     if rel_active:
-        anchor_xref = args.children_of or args.parents_of or args.ancestors_of or args.descendants_of
+        anchor_xref = (
+            args.children_of or args.parents_of or args.ancestors_of
+            or args.descendants_of or args.ahnentafel
+        )
         anchor = doc.resolve(anchor_xref)
         if anchor is None:
             print(f"error: no INDI with xref {anchor_xref}", file=sys.stderr)
             return 1
+        generations: list[int | None] | None = None
+        sosas: list[int | None] | None = None
         if args.children_of:
-            results = children_of(doc, anchor)
+            results = children_of(doc, anchor, primary_famc_only=args.primary_famc_only)
         elif args.parents_of:
-            results = parents_of(doc, anchor)
+            results = parents_of(doc, anchor, primary_famc_only=args.primary_famc_only)
         elif args.ancestors_of:
-            results = ancestors_of(doc, anchor, depth=args.depth)
+            paired = ancestors_of_with_generation(
+                doc, anchor, depth=args.depth,
+                primary_famc_only=args.primary_famc_only,
+            )
+            results = [s for s, _ in paired]
+            generations = [g for _, g in paired]
+        elif args.descendants_of:
+            paired = descendants_of_with_generation(
+                doc, anchor, depth=args.depth,
+                primary_famc_only=args.primary_famc_only,
+            )
+            results = [s for s, _ in paired]
+            generations = [g for _, g in paired]
         else:
-            results = descendants_of(doc, anchor, depth=args.depth)
+            triples = ahnentafel(
+                doc, anchor, depth=args.depth,
+                primary_famc_only=args.primary_famc_only,
+            )
+            results = [s for s, _, _ in triples]
+            generations = [g for _, g, _ in triples]
+            sosas = [n for _, _, n in triples]
         if args.limit:
             results = results[: args.limit]
-        _emit_records(results, args, doc)
+            if generations is not None:
+                generations = generations[: args.limit]
+            if sosas is not None:
+                sosas = sosas[: args.limit]
+        _emit_records(results, args, doc, generations=generations, sosas=sosas)
         return 0
 
     return 0
