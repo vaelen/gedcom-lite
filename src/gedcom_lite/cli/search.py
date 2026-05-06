@@ -2,9 +2,9 @@
 # Licensed under the MIT License. See LICENSE in the project root.
 """``gedcom-search`` — search a GEDCOM file by tag, value, path, or relation.
 
-Three search modes (one chosen per invocation):
+Search modes:
 
-* Generic structure filters
+* Generic structure filters (used alone)
     --xref @I1@                 lookup a single record by id
     --tag NAME                  match structures with this tag
     --value Smith               substring match on payload (or --regex)
@@ -12,12 +12,17 @@ Three search modes (one chosen per invocation):
     --in INDI                   restrict matches to within records of this tag
     --path INDI/BIRT/DATE       tree-path query (path components are tags)
 
-* Person / date / place
+* Person / date / place (combinable; AND together)
     --person "John Smith"       INDI whose NAME contains this string
-    --born-between 1900 1910    INDI with parseable BIRT date in range
-    --died-in Boston            INDI with DEAT.PLAC matching
+    --born-between LO HI        INDI with parseable BIRT date in [LO, HI]
+    --died-between LO HI        INDI with parseable DEAT date in [LO, HI]
+    --born-in PLACE             INDI whose BIRT.PLAC contains this string
+    --died-in PLACE             INDI whose DEAT.PLAC contains this string
 
-* Relationship traversal
+  LO and HI may be MIN or MAX for an unbounded side (e.g. --died-between MIN 1776).
+
+* Relationship traversal (one at a time; composes with person/date/place as
+  a post-filter on the traversal result)
     --children-of @I1@          children via FAMS → CHIL
     --parents-of @I1@           parents via FAMC → HUSB/WIFE
     --ancestors-of @I1@         all ancestors (with --depth N)
@@ -25,7 +30,7 @@ Three search modes (one chosen per invocation):
     --ahnentafel @I1@           Sosa-numbered ancestor list
     --depth N                   limit ancestor/descendant traversal
 
-* FAMC handling (composes with relationship modes)
+* FAMC handling
     --primary-famc-only         follow only the first FAMC of any individual
     --famc-conflicts            list INDIs with more than one FAMC
 
@@ -43,6 +48,7 @@ import argparse
 import json
 import re
 import sys
+from typing import Callable
 
 from gedcom_lite import (
     GedcomDocument,
@@ -137,63 +143,100 @@ def _individuals(doc: GedcomDocument) -> list[Structure]:
     return doc.find_records("INDI")
 
 
-def _person_name_match(doc: GedcomDocument, query: str, regex: bool) -> list[Structure]:
+IndiPredicate = Callable[[Structure], bool]
+
+
+def _name_predicate(query: str, regex: bool) -> IndiPredicate:
     pattern = re.compile(query, re.IGNORECASE) if regex else None
     needle = query.lower()
-    out: list[Structure] = []
-    for indi in _individuals(doc):
+
+    def pred(indi: Structure) -> bool:
         for n in indi.find_all_children("NAME"):
             payload = n.payload or ""
             if pattern is not None:
                 if pattern.search(payload):
-                    out.append(indi)
-                    break
+                    return True
             else:
                 if needle in payload.lower():
-                    out.append(indi)
-                    break
-    return out
+                    return True
+        return False
+
+    return pred
 
 
-def _born_between(doc: GedcomDocument, year_lo: int, year_hi: int) -> list[Structure]:
-    if year_lo > year_hi:
-        year_lo, year_hi = year_hi, year_lo
-    out: list[Structure] = []
-    for indi in _individuals(doc):
-        birt = indi.find("BIRT")
-        if birt is None:
-            continue
-        date = birt.find("DATE")
+def _year_range_predicate(event_tag: str, lo: int | None, hi: int | None) -> IndiPredicate:
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+
+    def pred(indi: Structure) -> bool:
+        ev = indi.find(event_tag)
+        if ev is None:
+            return False
+        date = ev.find("DATE")
         if date is None:
-            continue
+            return False
         dv = parse_date_value(date.payload)
         y = dv.start_year if dv.start_year is not None else dv.end_year
         if y is None:
-            continue
-        if year_lo <= y <= year_hi:
-            out.append(indi)
-    return out
+            return False
+        if lo is not None and y < lo:
+            return False
+        if hi is not None and y > hi:
+            return False
+        return True
+
+    return pred
 
 
-def _died_in(doc: GedcomDocument, place: str, regex: bool) -> list[Structure]:
+def _place_predicate(event_tag: str, place: str, regex: bool) -> IndiPredicate:
     pattern = re.compile(place, re.IGNORECASE) if regex else None
     needle = place.lower()
-    out: list[Structure] = []
-    for indi in _individuals(doc):
-        deat = indi.find("DEAT")
-        if deat is None:
-            continue
-        plac = deat.find("PLAC")
+
+    def pred(indi: Structure) -> bool:
+        ev = indi.find(event_tag)
+        if ev is None:
+            return False
+        plac = ev.find("PLAC")
         if plac is None or plac.payload is None:
-            continue
+            return False
         payload = plac.payload
         if pattern is not None:
-            if pattern.search(payload):
-                out.append(indi)
-        else:
-            if needle in payload.lower():
-                out.append(indi)
-    return out
+            return pattern.search(payload) is not None
+        return needle in payload.lower()
+
+    return pred
+
+
+def _build_indi_predicates(args: argparse.Namespace) -> list[IndiPredicate]:
+    preds: list[IndiPredicate] = []
+    if args.person is not None:
+        preds.append(_name_predicate(args.person, args.regex))
+    if args.born_between is not None:
+        preds.append(_year_range_predicate("BIRT", args.born_between[0], args.born_between[1]))
+    if args.died_between is not None:
+        preds.append(_year_range_predicate("DEAT", args.died_between[0], args.died_between[1]))
+    if args.born_in is not None:
+        preds.append(_place_predicate("BIRT", args.born_in, args.regex))
+    if args.died_in is not None:
+        preds.append(_place_predicate("DEAT", args.died_in, args.regex))
+    return preds
+
+
+def _apply_predicates(
+    records: list[Structure],
+    generations: list[int | None] | None,
+    sosas: list[int | None] | None,
+    preds: list[IndiPredicate],
+) -> tuple[list[Structure], list[int | None] | None, list[int | None] | None]:
+    if not preds:
+        return records, generations, sosas
+    keep = [all(p(r) for p in preds) for r in records]
+    records = [r for r, k in zip(records, keep) if k]
+    if generations is not None:
+        generations = [g for g, k in zip(generations, keep) if k]
+    if sosas is not None:
+        sosas = [s for s, k in zip(sosas, keep) if k]
+    return records, generations, sosas
 
 
 def _famc_conflicts(doc: GedcomDocument) -> list[Structure]:
@@ -368,6 +411,17 @@ def _render_record(rec: Structure, depth: int = 0, max_depth: int = 99) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _parse_year_bound(value: str) -> int | None:
+    if value.upper() in ("MIN", "MAX"):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected an integer year or 'MIN'/'MAX', got {value!r}"
+        )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gedcom-search",
@@ -385,10 +439,13 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="restrict matches to within records of this type (INDI, FAM, …)")
     g.add_argument("--path", help="tag-path query, e.g. INDI/BIRT/DATE")
 
-    pe = p.add_argument_group("person / date / place")
+    pe = p.add_argument_group("person / date / place (combinable; AND together)")
     pe.add_argument("--person", metavar="NAME", help="find INDI whose NAME contains this string (case-insensitive)")
-    pe.add_argument("--born-between", nargs=2, metavar=("YEAR_LO", "YEAR_HI"), type=int,
-                    help="find INDI with parseable BIRT date in [YEAR_LO, YEAR_HI]")
+    pe.add_argument("--born-between", nargs=2, metavar=("YEAR_LO", "YEAR_HI"), type=_parse_year_bound,
+                    help="find INDI with parseable BIRT date in [YEAR_LO, YEAR_HI] (use MIN/MAX for unbounded)")
+    pe.add_argument("--died-between", nargs=2, metavar=("YEAR_LO", "YEAR_HI"), type=_parse_year_bound,
+                    help="find INDI with parseable DEAT date in [YEAR_LO, YEAR_HI] (use MIN/MAX for unbounded)")
+    pe.add_argument("--born-in", metavar="PLACE", help="find INDI whose BIRT.PLAC contains this string")
     pe.add_argument("--died-in", metavar="PLACE", help="find INDI whose DEAT.PLAC contains this string")
 
     rl = p.add_argument_group("relationship traversal")
@@ -428,7 +485,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         doc = GedcomDocument.parse(args.file)
 
-    person_modes = [args.person is not None, args.born_between is not None, args.died_in is not None]
+    indi_filters_active = any([
+        args.person is not None,
+        args.born_between is not None,
+        args.died_between is not None,
+        args.born_in is not None,
+        args.died_in is not None,
+    ])
     rel_modes = [
         args.children_of, args.parents_of, args.ancestors_of,
         args.descendants_of, args.ahnentafel,
@@ -436,15 +499,28 @@ def main(argv: list[str] | None = None) -> int:
     rel_active = any(rel_modes)
     generic_filters = any([args.tag, args.value, args.in_record, args.path, args.xref])
 
-    active_modes = sum([generic_filters, any(person_modes), rel_active, args.famc_conflicts])
-    if active_modes == 0:
+    if not (generic_filters or indi_filters_active or rel_active or args.famc_conflicts):
         print("error: no search criteria given. See --help for the available filters.", file=sys.stderr)
         return 2
-    if active_modes > 1:
-        print("error: combine filters within a single mode only (generic / person / relationship / famc-conflicts).", file=sys.stderr)
+    if generic_filters and (indi_filters_active or rel_active or args.famc_conflicts):
+        print(
+            "error: generic filters (--xref/--tag/--value/--path/--in) cannot combine "
+            "with person/relationship/famc-conflicts modes.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.famc_conflicts and (indi_filters_active or rel_active):
+        print(
+            "error: --famc-conflicts cannot combine with person/relationship filters.",
+            file=sys.stderr,
+        )
         return 2
     if rel_active and sum(1 for m in rel_modes if m) > 1:
-        print("error: pick exactly one of --children-of / --parents-of / --ancestors-of / --descendants-of / --ahnentafel.", file=sys.stderr)
+        print(
+            "error: pick exactly one of --children-of / --parents-of / --ancestors-of "
+            "/ --descendants-of / --ahnentafel.",
+            file=sys.stderr,
+        )
         return 2
 
     if args.xref:
@@ -466,25 +542,14 @@ def main(argv: list[str] | None = None) -> int:
         _emit_structure_matches(matches, args, doc)
         return 0
 
-    if any(person_modes):
-        results: list[Structure] = []
-        if args.person is not None:
-            results = _person_name_match(doc, args.person, args.regex)
-        elif args.born_between is not None:
-            results = _born_between(doc, args.born_between[0], args.born_between[1])
-        elif args.died_in is not None:
-            results = _died_in(doc, args.died_in, args.regex)
-        if args.limit:
-            results = results[: args.limit]
-        _emit_records(results, args, doc)
-        return 0
-
     if args.famc_conflicts:
         results = _famc_conflicts(doc)
         if args.limit:
             results = results[: args.limit]
         _emit_records(results, args, doc)
         return 0
+
+    preds = _build_indi_predicates(args)
 
     if rel_active:
         anchor_xref = (
@@ -523,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
             results = [s for s, _, _ in triples]
             generations = [g for _, g, _ in triples]
             sosas = [n for _, _, n in triples]
+        results, generations, sosas = _apply_predicates(results, generations, sosas, preds)
         if args.limit:
             results = results[: args.limit]
             if generations is not None:
@@ -530,6 +596,13 @@ def main(argv: list[str] | None = None) -> int:
             if sosas is not None:
                 sosas = sosas[: args.limit]
         _emit_records(results, args, doc, generations=generations, sosas=sosas)
+        return 0
+
+    if indi_filters_active:
+        results = [i for i in _individuals(doc) if all(p(i) for p in preds)]
+        if args.limit:
+            results = results[: args.limit]
+        _emit_records(results, args, doc)
         return 0
 
     return 0

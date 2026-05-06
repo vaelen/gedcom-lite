@@ -5,6 +5,10 @@ All notable changes to `gedcom-lite` are documented in this file. The format is 
 ## [0.2.0] — 2026-05-06
 
 ### Added
+- `gedcom-search`: new symmetric flags `--died-between LO HI` and `--born-in PLACE`, mirroring the existing `--born-between` and `--died-in`.
+- `gedcom-search`: `--born-between` and `--died-between` accept `MIN` / `MAX` (case-insensitive) for an unbounded side, e.g. `--died-between MIN 1776`.
+- `gedcom-search`: person/date/place filters (`--person`, `--born-between`, `--died-between`, `--born-in`, `--died-in`) are now combinable in a single invocation and AND together.
+- `gedcom-search`: person/date/place filters compose with relationship traversal (`--ancestors-of`, `--descendants-of`, `--children-of`, `--parents-of`, `--ahnentafel`) as a post-filter on the traversal result, preserving `generation` and `sosa` metadata in JSON / facts output.
 - `gedcom-search`: `--ancestors-of` and `--descendants-of` now attach a `generation` integer to each record (top-level field with `--json`/`--facts`; `(gen N)` suffix in text). Subject = 0; shortest path wins for individuals reachable via multiple FAMC paths.
 - `gedcom-search --facts`: new output mode emitting one canonical JSON object per INDI with shape `{xref, name, birth: {date, place}, death: {date, place}, parents, famc}`. Composes with `--xref`, `--person`, `--ancestors-of`, `--descendants-of`, `--ahnentafel`, and `--famc-conflicts`. Mutually exclusive with `--json` and `--show-record`.
 - `gedcom-search --primary-famc-only`: when traversing, follow only the first FAMC of any individual. Affects `--parents-of`, `--ancestors-of`, `--descendants-of`, and `--ahnentafel`. For descent, a child counts only when the current family is its primary FAMC.
