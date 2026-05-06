@@ -14,7 +14,10 @@ All notable changes to `gedcom-lite` are documented in this file. The format is 
 - `gedcom-search --primary-famc-only`: when traversing, follow only the first FAMC of any individual. Affects `--parents-of`, `--ancestors-of`, `--descendants-of`, and `--ahnentafel`. For descent, a child counts only when the current family is its primary FAMC.
 - `gedcom-search --famc-conflicts`: query mode emitting INDIs with more than one FAMC entry.
 - `gedcom-search --ahnentafel @I1@`: Sosa-Stradonitz numbered ancestor list. Subject = 1; father of N = 2N; mother = 2N+1. Emits `sosa` and `generation` in JSON modes; sosa-prefixed text otherwise. Without `--primary-famc-only`, the same individual is emitted once per Sosa-reachable path.
-- New public traversal functions: `ancestors_of_with_generation`, `descendants_of_with_generation`, `ahnentafel`. The legacy `ancestors_of` / `descendants_of` wrap them and remain compatible. All four traversal helpers now accept `primary_famc_only=True`.
+- `gedcom-search --xref` accepts multiple ids in one call (`--xref @I1@ @I2@ @I3@`), emitting one record per id in argument order. Missing ids print a `warning:` line to stderr and are skipped; the call exits `1` only when *every* id is missing.
+- `gedcom-search --siblings-of @I1@`: emit the subject's full and half siblings (every INDI sharing at least one parent with the subject, excluding the subject themselves). Composes with `--facts`, `--json`, `--show-record`, and the person/date/place filters as a post-filter.
+- `gedcom-search --cousins-of @I1@`: emit collateral relatives — descendants of any ancestor of the subject, excluding the subject's own line of descent. `--depth N` caps the cousin degree (cumulative; default unlimited). In `--json` / `--facts` / text modes each record carries `degree` (1 = first cousin, 2 = second, …) and `removed` (absolute generational offset from the most-recent common ancestor); cousins reachable via multiple branches are emitted once at the closest relation.
+- New public traversal functions: `ancestors_of_with_generation`, `descendants_of_with_generation`, `ahnentafel`, `siblings_of`, `cousins_of_with_degree`. The legacy `ancestors_of` / `descendants_of` wrap them and remain compatible. All traversal helpers accept `primary_famc_only=True`.
 
 ## [0.1.0] — 2026-05-06
 

@@ -5,7 +5,7 @@
 Search modes:
 
 * Generic structure filters (used alone)
-    --xref @I1@                 lookup a single record by id
+    --xref @I1@ [@I2@ ...]      lookup one or more records by id
     --tag NAME                  match structures with this tag
     --value Smith               substring match on payload (or --regex)
     --regex                     interpret --value as a regular expression
@@ -25,10 +25,12 @@ Search modes:
   a post-filter on the traversal result)
     --children-of @I1@          children via FAMS → CHIL
     --parents-of @I1@           parents via FAMC → HUSB/WIFE
+    --siblings-of @I1@          full and half siblings
     --ancestors-of @I1@         all ancestors (with --depth N)
     --descendants-of @I1@       all descendants (with --depth N)
+    --cousins-of @I1@           collateral relatives (with --depth N)
     --ahnentafel @I1@           Sosa-numbered ancestor list
-    --depth N                   limit ancestor/descendant traversal
+    --depth N                   limit ancestor/descendant/cousin traversal
 
 * FAMC handling
     --primary-famc-only         follow only the first FAMC of any individual
@@ -56,9 +58,11 @@ from gedcom_lite import (
     ahnentafel,
     ancestors_of_with_generation,
     children_of,
+    cousins_of_with_degree,
     descendants_of_with_generation,
     parents_of,
     parse_date_value,
+    siblings_of,
     structure_to_dict,
 )
 
@@ -227,16 +231,29 @@ def _apply_predicates(
     generations: list[int | None] | None,
     sosas: list[int | None] | None,
     preds: list[IndiPredicate],
-) -> tuple[list[Structure], list[int | None] | None, list[int | None] | None]:
+    *,
+    degrees: list[int | None] | None = None,
+    removeds: list[int | None] | None = None,
+) -> tuple[
+    list[Structure],
+    list[int | None] | None,
+    list[int | None] | None,
+    list[int | None] | None,
+    list[int | None] | None,
+]:
     if not preds:
-        return records, generations, sosas
+        return records, generations, sosas, degrees, removeds
     keep = [all(p(r) for p in preds) for r in records]
     records = [r for r, k in zip(records, keep) if k]
     if generations is not None:
         generations = [g for g, k in zip(generations, keep) if k]
     if sosas is not None:
         sosas = [s for s, k in zip(sosas, keep) if k]
-    return records, generations, sosas
+    if degrees is not None:
+        degrees = [d for d, k in zip(degrees, keep) if k]
+    if removeds is not None:
+        removeds = [r for r, k in zip(removeds, keep) if k]
+    return records, generations, sosas, degrees, removeds
 
 
 def _famc_conflicts(doc: GedcomDocument) -> list[Structure]:
@@ -264,6 +281,8 @@ def _indi_facts(
     *,
     generation: int | None = None,
     sosa: int | None = None,
+    degree: int | None = None,
+    removed: int | None = None,
     primary_famc_only: bool = False,
 ) -> dict:
     name = indi.find("NAME")
@@ -288,6 +307,10 @@ def _indi_facts(
         out["generation"] = generation
     if sosa is not None:
         out["sosa"] = sosa
+    if degree is not None:
+        out["degree"] = degree
+    if removed is not None:
+        out["removed"] = removed
     return out
 
 
@@ -295,7 +318,14 @@ def _indi_facts(
 # Output rendering
 # ---------------------------------------------------------------------------
 
-def _person_summary(rec: Structure, *, generation: int | None = None, sosa: int | None = None) -> str:
+def _person_summary(
+    rec: Structure,
+    *,
+    generation: int | None = None,
+    sosa: int | None = None,
+    degree: int | None = None,
+    removed: int | None = None,
+) -> str:
     name = rec.find("NAME")
     name_str = name.payload if name and name.payload else "(no name)"
     bd = rec.find("BIRT")
@@ -308,14 +338,26 @@ def _person_summary(rec: Structure, *, generation: int | None = None, sosa: int 
         line = f"{rec.xref}  {name_str}"
     if sosa is not None:
         line = f"{sosa}  {line}"
+    elif degree is not None and removed is not None:
+        line = f"{line} (degree {degree}, removed {removed})"
     elif generation is not None:
         line = f"{line} (gen {generation})"
     return line
 
 
-def _record_summary_line(rec: Structure, *, generation: int | None = None, sosa: int | None = None) -> str:
+def _record_summary_line(
+    rec: Structure,
+    *,
+    generation: int | None = None,
+    sosa: int | None = None,
+    degree: int | None = None,
+    removed: int | None = None,
+) -> str:
     if rec.tag == "INDI":
-        return _person_summary(rec, generation=generation, sosa=sosa)
+        return _person_summary(
+            rec, generation=generation, sosa=sosa,
+            degree=degree, removed=removed,
+        )
     if rec.tag == "FAM":
         partners = []
         for slot in ("HUSB", "WIFE"):
@@ -334,23 +376,30 @@ def _emit_records(
     *,
     generations: list[int | None] | None = None,
     sosas: list[int | None] | None = None,
+    degrees: list[int | None] | None = None,
+    removeds: list[int | None] | None = None,
 ) -> None:
     if generations is None:
         generations = [None] * len(records)
     if sosas is None:
         sosas = [None] * len(records)
+    if degrees is None:
+        degrees = [None] * len(records)
+    if removeds is None:
+        removeds = [None] * len(records)
 
     if args.count:
         sys.stdout.write(f"{len(records)}\n")
         return
     if args.facts:
         items = []
-        for r, gen, sosa in zip(records, generations, sosas):
+        for r, gen, sosa, deg, rem in zip(records, generations, sosas, degrees, removeds):
             if r.tag != "INDI":
                 continue
             items.append(_indi_facts(
                 r, doc,
                 generation=gen, sosa=sosa,
+                degree=deg, removed=rem,
                 primary_famc_only=args.primary_famc_only,
             ))
         sys.stdout.write(json.dumps(items, indent=2, ensure_ascii=False))
@@ -358,18 +407,24 @@ def _emit_records(
         return
     if args.json:
         items = []
-        for r, gen, sosa in zip(records, generations, sosas):
+        for r, gen, sosa, deg, rem in zip(records, generations, sosas, degrees, removeds):
             d = structure_to_dict(r)
             if gen is not None:
                 d["generation"] = gen
             if sosa is not None:
                 d["sosa"] = sosa
+            if deg is not None:
+                d["degree"] = deg
+            if rem is not None:
+                d["removed"] = rem
             items.append(d)
         sys.stdout.write(json.dumps(items, indent=2, ensure_ascii=False))
         sys.stdout.write("\n")
         return
-    for r, gen, sosa in zip(records, generations, sosas):
-        sys.stdout.write(_record_summary_line(r, generation=gen, sosa=sosa) + "\n")
+    for r, gen, sosa, deg, rem in zip(records, generations, sosas, degrees, removeds):
+        sys.stdout.write(_record_summary_line(
+            r, generation=gen, sosa=sosa, degree=deg, removed=rem,
+        ) + "\n")
         if args.show_record:
             sys.stdout.write(_render_record(r) + "\n")
 
@@ -431,7 +486,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", help="path to a .ged file (or - for stdin)")
 
     g = p.add_argument_group("generic structure filters")
-    g.add_argument("--xref", help="lookup a single record by cross-reference id, e.g. @I1@")
+    g.add_argument("--xref", nargs="+", metavar="XREF",
+                   help="lookup one or more records by cross-reference id, e.g. @I1@ @I2@")
     g.add_argument("--tag", help="filter to structures with this tag")
     g.add_argument("--value", help="match payload (substring, or regex with --regex)")
     g.add_argument("--regex", action="store_true", help="interpret --value as a regex")
@@ -451,8 +507,12 @@ def _build_parser() -> argparse.ArgumentParser:
     rl = p.add_argument_group("relationship traversal")
     rl.add_argument("--children-of", metavar="XREF", help="children of an INDI via FAMS → CHIL")
     rl.add_argument("--parents-of", metavar="XREF", help="parents of an INDI via FAMC → HUSB/WIFE")
+    rl.add_argument("--siblings-of", metavar="XREF",
+                    help="full and half siblings of an INDI")
     rl.add_argument("--ancestors-of", metavar="XREF", help="all ancestors of an INDI")
     rl.add_argument("--descendants-of", metavar="XREF", help="all descendants of an INDI")
+    rl.add_argument("--cousins-of", metavar="XREF",
+                    help="collateral relatives of an INDI; --depth caps cousin degree")
     rl.add_argument("--ahnentafel", metavar="XREF", help="Sosa-numbered ancestor list rooted at this INDI")
     rl.add_argument("--depth", type=int, default=99, help="cap traversal depth (default: unlimited)")
 
@@ -493,8 +553,9 @@ def main(argv: list[str] | None = None) -> int:
         args.died_in is not None,
     ])
     rel_modes = [
-        args.children_of, args.parents_of, args.ancestors_of,
-        args.descendants_of, args.ahnentafel,
+        args.children_of, args.parents_of, args.siblings_of,
+        args.ancestors_of, args.descendants_of, args.cousins_of,
+        args.ahnentafel,
     ]
     rel_active = any(rel_modes)
     generic_filters = any([args.tag, args.value, args.in_record, args.path, args.xref])
@@ -517,19 +578,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if rel_active and sum(1 for m in rel_modes if m) > 1:
         print(
-            "error: pick exactly one of --children-of / --parents-of / --ancestors-of "
-            "/ --descendants-of / --ahnentafel.",
+            "error: pick exactly one of --children-of / --parents-of / --siblings-of "
+            "/ --ancestors-of / --descendants-of / --cousins-of / --ahnentafel.",
             file=sys.stderr,
         )
         return 2
 
     if args.xref:
-        rec = doc.resolve(args.xref)
-        records = [rec] if rec is not None else []
+        records: list[Structure] = []
+        missing: list[str] = []
+        for xref in args.xref:
+            rec = doc.resolve(xref)
+            if rec is None:
+                missing.append(xref)
+                print(f"warning: no record with xref {xref}", file=sys.stderr)
+            else:
+                records.append(rec)
         if args.limit:
             records = records[: args.limit]
         _emit_records(records, args, doc)
-        return 0
+        if records:
+            return 0
+        return 1 if missing else 0
 
     if generic_filters:
         matches = _structure_filter(
@@ -553,8 +623,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if rel_active:
         anchor_xref = (
-            args.children_of or args.parents_of or args.ancestors_of
-            or args.descendants_of or args.ahnentafel
+            args.children_of or args.parents_of or args.siblings_of
+            or args.ancestors_of or args.descendants_of or args.cousins_of
+            or args.ahnentafel
         )
         anchor = doc.resolve(anchor_xref)
         if anchor is None:
@@ -562,10 +633,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         generations: list[int | None] | None = None
         sosas: list[int | None] | None = None
+        degrees: list[int | None] | None = None
+        removeds: list[int | None] | None = None
         if args.children_of:
             results = children_of(doc, anchor, primary_famc_only=args.primary_famc_only)
         elif args.parents_of:
             results = parents_of(doc, anchor, primary_famc_only=args.primary_famc_only)
+        elif args.siblings_of:
+            results = siblings_of(doc, anchor, primary_famc_only=args.primary_famc_only)
         elif args.ancestors_of:
             paired = ancestors_of_with_generation(
                 doc, anchor, depth=args.depth,
@@ -580,6 +655,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             results = [s for s, _ in paired]
             generations = [g for _, g in paired]
+        elif args.cousins_of:
+            triples = cousins_of_with_degree(
+                doc, anchor, depth=args.depth,
+                primary_famc_only=args.primary_famc_only,
+            )
+            results = [s for s, _, _ in triples]
+            degrees = [d for _, d, _ in triples]
+            removeds = [r for _, _, r in triples]
         else:
             triples = ahnentafel(
                 doc, anchor, depth=args.depth,
@@ -588,14 +671,25 @@ def main(argv: list[str] | None = None) -> int:
             results = [s for s, _, _ in triples]
             generations = [g for _, g, _ in triples]
             sosas = [n for _, _, n in triples]
-        results, generations, sosas = _apply_predicates(results, generations, sosas, preds)
+        results, generations, sosas, degrees, removeds = _apply_predicates(
+            results, generations, sosas, preds,
+            degrees=degrees, removeds=removeds,
+        )
         if args.limit:
             results = results[: args.limit]
             if generations is not None:
                 generations = generations[: args.limit]
             if sosas is not None:
                 sosas = sosas[: args.limit]
-        _emit_records(results, args, doc, generations=generations, sosas=sosas)
+            if degrees is not None:
+                degrees = degrees[: args.limit]
+            if removeds is not None:
+                removeds = removeds[: args.limit]
+        _emit_records(
+            results, args, doc,
+            generations=generations, sosas=sosas,
+            degrees=degrees, removeds=removeds,
+        )
         return 0
 
     if indi_filters_active:

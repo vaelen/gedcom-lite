@@ -65,6 +65,30 @@ def children_of(
     return out
 
 
+def siblings_of(
+    doc: GedcomDocument,
+    indi: Structure,
+    *,
+    primary_famc_only: bool = False,
+) -> list[Structure]:
+    """Return INDIs sharing at least one parent with ``indi`` (excluding ``indi``).
+
+    Walks ``parents_of(indi)`` then ``children_of(parent)`` for each parent
+    and dedups by xref. Naturally includes both full siblings (sharing both
+    parents) and half siblings (sharing one). With ``primary_famc_only=True``,
+    each side filters down to the primary FAMC, which collapses the result
+    toward full siblings only.
+    """
+    out: list[Structure] = []
+    seen: set[str] = {indi.xref} if indi.xref else set()
+    for parent in parents_of(doc, indi, primary_famc_only=primary_famc_only):
+        for sib in children_of(doc, parent, primary_famc_only=primary_famc_only):
+            if sib.xref and sib.xref not in seen:
+                seen.add(sib.xref)
+                out.append(sib)
+    return out
+
+
 def ancestors_of_with_generation(
     doc: GedcomDocument,
     indi: Structure,
@@ -185,4 +209,71 @@ def ahnentafel(
                 out.append(entry)
                 frontier.append(entry)
     out.sort(key=lambda t: t[2])
+    return out
+
+
+def cousins_of_with_degree(
+    doc: GedcomDocument,
+    indi: Structure,
+    depth: int = 99,
+    *,
+    primary_famc_only: bool = False,
+) -> list[tuple[Structure, int, int]]:
+    """Collateral relatives of ``indi``, paired with ``(degree, removed)``.
+
+    For each ancestor ``A`` of ``indi`` at generation ``N`` (``1..depth``),
+    finds ``A``'s siblings (children of ``A``'s parents who are not on
+    ``indi``'s ancestor line) and gathers each sibling and its descendants.
+    These are ``indi``'s "Nth cousins" by the issue's framing — a relation
+    via the most-recent common ancestor at generation ``N + 1`` from the
+    subject.
+
+    For each emitted cousin ``C``:
+      * ``degree`` = ``N`` (1 = first cousin, 2 = second, ...)
+      * ``removed`` = ``abs(descend_dist - N)``, where ``descend_dist`` is
+        the number of generations from the gen-``N`` sibling down to ``C``.
+
+    A cousin reachable through multiple ancestor branches is emitted once,
+    at the smallest ``(degree, removed)`` tuple (the closest relation).
+    Results are sorted by ``(degree, removed, xref)``.
+    """
+    line: set[str] = set()
+    if indi.xref:
+        line.add(indi.xref)
+    for anc in ancestors_of(doc, indi, primary_famc_only=primary_famc_only):
+        if anc.xref:
+            line.add(anc.xref)
+
+    best: dict[str, tuple[int, int, Structure]] = {}
+    for anc, gen_n in ancestors_of_with_generation(
+        doc, indi, depth=depth, primary_famc_only=primary_famc_only,
+    ):
+        if gen_n == 0:
+            continue
+        for parent in parents_of(doc, anc, primary_famc_only=primary_famc_only):
+            for sibling in children_of(doc, parent, primary_famc_only=primary_famc_only):
+                if not sibling.xref or sibling.xref in line:
+                    continue
+                candidates: list[tuple[Structure, int]] = [(sibling, 0)]
+                candidates.extend(
+                    descendants_of_with_generation(
+                        doc, sibling,
+                        primary_famc_only=primary_famc_only,
+                    )
+                )
+                for cousin, dist in candidates:
+                    if not cousin.xref or cousin.xref in line:
+                        continue
+                    degree = gen_n
+                    removed = abs(dist - gen_n)
+                    key = (degree, removed)
+                    prior = best.get(cousin.xref)
+                    if prior is None or key < (prior[0], prior[1]):
+                        best[cousin.xref] = (degree, removed, cousin)
+
+    out = [
+        (cousin, degree, removed)
+        for _, (degree, removed, cousin) in best.items()
+    ]
+    out.sort(key=lambda t: (t[1], t[2], t[0].xref or ""))
     return out
