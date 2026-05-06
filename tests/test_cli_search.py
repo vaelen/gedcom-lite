@@ -49,10 +49,21 @@ class TestErrors:
         assert rc == 2
         assert "no search criteria" in stderr
 
-    def test_combining_modes(self, maximal70: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_combining_generic_with_person_rejected(
+        self, maximal70: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         rc, _, stderr = _run([str(maximal70), "--tag", "NAME", "--person", "Smith"], capsys)
         assert rc == 2
-        assert "single mode" in stderr
+        assert "generic filters" in stderr
+
+    def test_combining_famc_conflicts_with_person_rejected(
+        self, maximal70: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, _, stderr = _run(
+            [str(maximal70), "--famc-conflicts", "--person", "Smith"], capsys,
+        )
+        assert rc == 2
+        assert "famc-conflicts" in stderr
 
     def test_unknown_xref_in_relationship(self, maximal70: Path, capsys: pytest.CaptureFixture[str]) -> None:
         rc, _, stderr = _run([str(maximal70), "--children-of", "@MISSING@"], capsys)
@@ -351,3 +362,210 @@ class TestPrimaryFamcOnlyFlag:
         )
         assert rc == 0
         assert stdout.strip() == "0"
+
+
+@pytest.fixture
+def dated_tree(tmp_path: Path) -> Path:
+    """Three-generation tree with rich BIRT/DEAT date+place coverage."""
+    src = (
+        "0 HEAD\n1 GEDC\n2 VERS 7.0\n"
+        # @I1@ subject — born Boston 1820, died Boston 1880
+        "0 @I1@ INDI\n1 NAME John Smith //\n1 SEX M\n"
+        "1 BIRT\n2 DATE 1 JAN 1820\n2 PLAC Boston, Massachusetts, USA\n"
+        "1 DEAT\n2 DATE 5 JUN 1880\n2 PLAC Boston, Massachusetts, USA\n"
+        "1 FAMC @F1@\n"
+        # @I2@ father — born London 1790, died Boston 1850
+        "0 @I2@ INDI\n1 NAME Henry Smith //\n1 SEX M\n"
+        "1 BIRT\n2 DATE 12 MAR 1790\n2 PLAC London, England\n"
+        "1 DEAT\n2 DATE 3 OCT 1850\n2 PLAC Boston, Massachusetts, USA\n"
+        "1 FAMS @F1@\n"
+        # @I3@ mother — born Boston 1795, died Boston 1860
+        "0 @I3@ INDI\n1 NAME Mary Smith //\n1 SEX F\n"
+        "1 BIRT\n2 DATE 7 SEP 1795\n2 PLAC Boston, Massachusetts, USA\n"
+        "1 DEAT\n2 DATE 15 FEB 1860\n2 PLAC Boston, Massachusetts, USA\n"
+        "1 FAMS @F1@\n"
+        # @I4@ paternal grandfather — born Bristol 1750, died London 1810
+        "0 @I4@ INDI\n1 NAME Old Smith //\n1 SEX M\n"
+        "1 BIRT\n2 DATE 1750\n2 PLAC Bristol, England\n"
+        "1 DEAT\n2 DATE 1810\n2 PLAC London, England\n"
+        # @F1@ — Henry × Mary, child @I1@
+        "0 @F1@ FAM\n1 HUSB @I2@\n1 WIFE @I3@\n1 CHIL @I1@\n"
+        "0 TRLR\n"
+    )
+    path = tmp_path / "dated.ged"
+    path.write_text(src, encoding="utf-8")
+    return path
+
+
+class TestSymmetricFlags:
+    def test_died_between(self, dated_tree: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        rc, stdout, _ = _run([str(dated_tree), "--died-between", "1850", "1860"], capsys)
+        assert rc == 0
+        # @I2@ died 1850, @I3@ died 1860; @I1@ died 1880, @I4@ died 1810
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert set(xrefs) == {"@I2@", "@I3@"}
+
+    def test_born_in(self, dated_tree: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        rc, stdout, _ = _run([str(dated_tree), "--born-in", "Boston"], capsys)
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert set(xrefs) == {"@I1@", "@I3@"}
+
+    def test_min_sentinel_lower_bound(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run([str(dated_tree), "--died-between", "MIN", "1820"], capsys)
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        # Only @I4@ died before 1820 (1810).
+        assert set(xrefs) == {"@I4@"}
+
+    def test_max_sentinel_upper_bound(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run([str(dated_tree), "--born-between", "1795", "MAX"], capsys)
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        # @I1@ 1820, @I3@ 1795 qualify; @I2@ 1790 and @I4@ 1750 do not.
+        assert set(xrefs) == {"@I1@", "@I3@"}
+
+    def test_min_max_case_insensitive(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, _, _ = _run([str(dated_tree), "--born-between", "min", "max"], capsys)
+        assert rc == 0
+
+    def test_invalid_year_bound(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            _run([str(dated_tree), "--born-between", "abc", "1900"], capsys)
+
+
+class TestCombinedFilters:
+    def test_person_and_born_between(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--person", "Smith", "--born-between", "1800", "1850"], capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        # Smiths born 1800-1850: @I1@ (1820). @I2@ 1790, @I3@ 1795, @I4@ 1750 excluded.
+        assert set(xrefs) == {"@I1@"}
+
+    def test_three_filters_and(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree),
+             "--person", "Smith",
+             "--born-between", "1700", "1900",
+             "--died-in", "Boston"],
+            capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        # Smiths who died in Boston: @I1@, @I2@, @I3@. @I4@ died London — excluded.
+        assert set(xrefs) == {"@I1@", "@I2@", "@I3@"}
+
+    def test_born_in_and_died_in(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--born-in", "Boston", "--died-in", "Boston"], capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        # Born and died in Boston: @I1@, @I3@.
+        assert set(xrefs) == {"@I1@", "@I3@"}
+
+    def test_died_between_with_min_acceptance(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Acceptance phrasing from issue #2: "died before 1776"-style query.
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--died-between", "MIN", "1820"], capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert set(xrefs) == {"@I4@"}
+
+    def test_combine_no_match_returns_empty(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--person", "Nobody", "--born-in", "Mars"], capsys,
+        )
+        assert rc == 0
+        assert stdout.strip() == ""
+
+
+class TestTraversalComposition:
+    def test_ancestors_with_person_filter(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # @I1@'s ancestors: @I2@, @I3@. With --person Henry, only @I2@.
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--ancestors-of", "@I1@", "--person", "Henry"], capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert set(xrefs) == {"@I2@"}
+
+    def test_ancestors_with_born_in_facts(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--ancestors-of", "@I1@", "--born-in", "London", "--facts"], capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        # Only @I2@ (born London) survives the post-filter; generation preserved.
+        assert {d["xref"] for d in data} == {"@I2@"}
+        assert data[0]["generation"] == 1
+
+    def test_ancestors_with_died_in_filters_subject(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Subject @I1@ died Boston; ancestors @I2@/@I3@ also Boston, @I4@ London.
+        # ancestors-of returns ancestors only (excludes subject), so @I4@ filtered out.
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--ancestors-of", "@I1@", "--died-in", "Boston"], capsys,
+        )
+        assert rc == 0
+        xrefs = [ln.split()[0] for ln in stdout.splitlines() if ln.strip()]
+        assert set(xrefs) == {"@I2@", "@I3@"}
+
+    def test_ahnentafel_with_filter_preserves_sosa(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--ahnentafel", "@I1@", "--born-in", "Boston", "--json"], capsys,
+        )
+        assert rc == 0
+        data = json.loads(stdout)
+        sosa = {d["xref"]: d["sosa"] for d in data}
+        # Only @I1@ (sosa 1) and @I3@ (sosa 3) born Boston.
+        assert sosa == {"@I1@": 1, "@I3@": 3}
+
+    def test_descendants_with_filter(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # @I2@'s descendants: @I1@. Filtered by --born-in London → empty.
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--descendants-of", "@I2@", "--born-in", "London"], capsys,
+        )
+        assert rc == 0
+        assert stdout.strip() == ""
+
+    def test_traversal_filter_with_limit(
+        self, dated_tree: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc, stdout, _ = _run(
+            [str(dated_tree), "--ancestors-of", "@I1@", "--died-in", "Boston", "--limit", "1"],
+            capsys,
+        )
+        assert rc == 0
+        lines = [ln for ln in stdout.splitlines() if ln.strip()]
+        assert len(lines) == 1

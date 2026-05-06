@@ -87,9 +87,18 @@ gedcom-search tree.ged --person Smith
 # people born between 1900 and 1910
 gedcom-search tree.ged --born-between 1900 1910
 
+# died before 1776 (MIN/MAX work as unbounded sentinels on either side)
+gedcom-search tree.ged --died-between MIN 1776
+
+# combine person/date/place filters — they AND together
+gedcom-search tree.ged --person Smith --born-between 1800 1850 --died-in Boston
+
 # children, parents, ancestors, descendants
 gedcom-search tree.ged --children-of @I1@
 gedcom-search tree.ged --ancestors-of @I1@ --depth 4
+
+# traversal composes with person/date/place filters as a post-filter
+gedcom-search tree.ged --ancestors-of @I1@ --born-in Boston --facts
 
 # ancestor records carry their generation in JSON (subject = 0, parents = 1, …)
 gedcom-search tree.ged --ancestors-of @I1@ --json | jq '.[].generation'
